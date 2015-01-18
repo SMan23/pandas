@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # pylint: disable-msg=E1101,W0612
 
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from pandas.util.testing import (assert_series_equal,
                                  assert_frame_equal,
                                  assert_panel_equal,
                                  assert_almost_equal,
+                                 assert_equal,
                                  ensure_clean)
 import pandas.util.testing as tm
 
@@ -351,6 +353,21 @@ class Generic(object):
             # neg index
             self._compare(o.head(-3), o.head(7))
             self._compare(o.tail(-3), o.tail(7))
+
+
+    def test_size_compat(self):
+        # GH8846
+        # size property should be defined
+
+        o = self._construct(shape=10)
+        self.assertTrue(o.size == np.prod(o.shape))
+        self.assertTrue(o.size == 10**len(o.axes))
+
+    def test_split_compat(self):
+        # xref GH8846
+        o = self._construct(shape=10)
+        self.assertTrue(len(np.array_split(o,5)) == 5)
+        self.assertTrue(len(np.array_split(o,2)) == 2)
 
 class TestSeries(tm.TestCase, Generic):
     _typ = Series
@@ -1300,6 +1317,18 @@ class TestDataFrame(tm.TestCase, Generic):
                 df = DataFrame(index=l0)
                 df = getattr(df, fn)('US/Pacific', level=1)
 
+    def test_set_attribute(self):
+        # Test for consistent setattr behavior when an attribute and a column
+        # have the same name (Issue #8994)
+        df = DataFrame({'x':[1, 2, 3]})
+
+        df.y = 2
+        df['y'] = [2, 4, 6]
+        df.y = 5
+
+        assert_equal(df.y, 5)
+        assert_series_equal(df['y'], Series([2, 4, 6]))
+
 
 class TestPanel(tm.TestCase, Generic):
     _typ = Panel
@@ -1422,8 +1451,8 @@ class TestNDFrame(tm.TestCase):
         self.assertTrue(a.equals(c))
         self.assertTrue(a.equals(d))
         self.assertFalse(a.equals(e))
-        self.assertTrue(e.equals(f)) 
-        
+        self.assertTrue(e.equals(f))
+
     def test_describe_raises(self):
         with tm.assertRaises(NotImplementedError):
             tm.makePanel().describe()

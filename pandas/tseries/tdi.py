@@ -76,6 +76,7 @@ def _td_index_cmp(opname, nat_result=False):
 
     return wrapper
 
+
 class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
     """
     Immutable ndarray of timedelta64 data, represented internally as int64, and
@@ -117,8 +118,8 @@ class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
     _left_indexer_unique = _join_i8_wrapper(
         _algos.left_join_indexer_unique_int64, with_indexers=False)
     _arrmap = None
-    _datetimelike_ops = ['days','hours','minutes','seconds','milliseconds','microseconds',
-                         'nanoseconds','freq','components']
+    _datetimelike_ops = ['days','seconds','microseconds','nanoseconds',
+                         'freq','components']
 
     __eq__ = _td_index_cmp('__eq__')
     __ne__ = _td_index_cmp('__ne__', nat_result=True)
@@ -310,7 +311,7 @@ class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
                 result = self._maybe_mask_results(result,convert='float64')
                 return Index(result,name=self.name,copy=False)
 
-        raise TypeError("can only perform ops with timedelta like values")
+        return NotImplemented
 
     def _add_datelike(self, other):
 
@@ -348,37 +349,22 @@ class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
 
     @property
     def days(self):
-        """ The number of integer days for each element """
+        """ Number of days for each element. """
         return self._get_field('days')
 
     @property
-    def hours(self):
-        """ The number of integer hours for each element """
-        return self._get_field('hours')
-
-    @property
-    def minutes(self):
-        """ The number of integer minutes for each element """
-        return self._get_field('minutes')
-
-    @property
     def seconds(self):
-        """ The number of integer seconds for each element """
+        """ Number of seconds (>= 0 and less than 1 day) for each element. """
         return self._get_field('seconds')
 
     @property
-    def milliseconds(self):
-        """ The number of integer milliseconds for each element """
-        return self._get_field('milliseconds')
-
-    @property
     def microseconds(self):
-        """ The number of integer microseconds for each element """
+        """ Number of microseconds (>= 0 and less than 1 second) for each element. """
         return self._get_field('microseconds')
 
     @property
     def nanoseconds(self):
-        """ The number of integer nanoseconds for each element """
+        """ Number of nanoseconds (>= 0 and less than 1 microsecond) for each element. """
         return self._get_field('nanoseconds')
 
     @property
@@ -407,23 +393,6 @@ class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
         result.columns = columns
         if not hasnans:
             result = result.astype('int64')
-        return result
-
-    def summary(self, name=None):
-        formatter = self._formatter_func
-        if len(self) > 0:
-            index_summary = ', %s to %s' % (formatter(self[0]),
-                                            formatter(self[-1]))
-        else:
-            index_summary = ''
-
-        if name is None:
-            name = type(self).__name__
-        result = '%s: %s entries%s' % (com.pprint_thing(name),
-                                       len(self), index_summary)
-        if self.freq:
-            result += '\nFreq: %s' % self.freqstr
-
         return result
 
     def to_pytimedelta(self):
@@ -705,6 +674,31 @@ class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
             except (KeyError, ValueError):
                 raise KeyError(key)
 
+    def _maybe_cast_slice_bound(self, label, side):
+        """
+        If label is a string, cast it to timedelta according to resolution.
+
+
+        Parameters
+        ----------
+        label : object
+        side : {'left', 'right'}
+
+        Returns
+        -------
+        bound : Timedelta or object
+
+        """
+        if isinstance(label, compat.string_types):
+            parsed = _coerce_scalar_to_timedelta_type(label, box=True)
+            lbound = parsed.round(parsed.resolution)
+            if side == 'left':
+                return lbound
+            else:
+                return (lbound + _resolution_map[parsed.resolution]() -
+                        Timedelta(1, 'ns'))
+        return label
+
     def _get_string_slice(self, key, use_lhs=True, use_rhs=True):
         freq = getattr(self, 'freqstr',
                        getattr(self, 'inferred_freq', None))
@@ -769,13 +763,6 @@ class TimedeltaIndex(DatetimeIndexOpsMixin, Int64Index):
                 return result
 
             return self._simple_new(result, self.name)
-
-    @property
-    def freqstr(self):
-        """ return the frequency object as a string if its set, otherwise None """
-        if self.freq is None:
-            return None
-        return self.freq
 
     def searchsorted(self, key, side='left'):
         if isinstance(key, (np.ndarray, Index)):

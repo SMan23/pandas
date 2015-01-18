@@ -172,6 +172,25 @@ class TestHDFStore(tm.TestCase):
         finally:
             safe_remove(self.path)
 
+    def test_context(self):
+        try:
+            with HDFStore(self.path) as tbl:
+                raise ValueError('blah')
+        except ValueError:
+            pass
+        finally:
+            safe_remove(self.path)
+
+        try:
+            with HDFStore(self.path) as tbl:
+                tbl['a'] = tm.makeDataFrame()
+
+            with HDFStore(self.path) as tbl:
+                self.assertEqual(len(tbl), 1)
+                self.assertEqual(type(tbl['a']), DataFrame)
+        finally:
+            safe_remove(self.path)
+
     def test_conv_read_write(self):
 
         try:
@@ -334,10 +353,10 @@ class TestHDFStore(tm.TestCase):
 
             pandas.set_option('io.hdf.default_format','table')
             df.to_hdf(path,'df3')
-            with get_store(path) as store:
+            with HDFStore(path) as store:
                 self.assertTrue(store.get_storer('df3').is_table)
             df.to_hdf(path,'df4',append=True)
-            with get_store(path) as store:
+            with HDFStore(path) as store:
                 self.assertTrue(store.get_storer('df4').is_table)
 
             pandas.set_option('io.hdf.default_format',None)
@@ -428,9 +447,9 @@ class TestHDFStore(tm.TestCase):
             _maybe_remove(store, 'df1')
             store.append('df1', df[:10])
             store.append('df1', df[10:])
-            self.assertEqual(store.root.a._v_attrs.pandas_version, '0.10.1')
-            self.assertEqual(store.root.b._v_attrs.pandas_version, '0.10.1')
-            self.assertEqual(store.root.df1._v_attrs.pandas_version, '0.10.1')
+            self.assertEqual(store.root.a._v_attrs.pandas_version, '0.15.2')
+            self.assertEqual(store.root.b._v_attrs.pandas_version, '0.15.2')
+            self.assertEqual(store.root.df1._v_attrs.pandas_version, '0.15.2')
 
             # write a file and wipe its versioning
             _maybe_remove(store, 'df2')
@@ -463,11 +482,11 @@ class TestHDFStore(tm.TestCase):
                 # context
                 if mode in ['r','r+']:
                     def f():
-                        with get_store(path,mode=mode) as store:
+                        with HDFStore(path,mode=mode) as store:
                             pass
                     self.assertRaises(IOError, f)
                 else:
-                    with get_store(path,mode=mode) as store:
+                    with HDFStore(path,mode=mode) as store:
                         self.assertEqual(store._handle.mode, mode)
 
             with ensure_clean_path(self.path) as path:
@@ -4571,29 +4590,83 @@ class TestHDFStore(tm.TestCase):
         tm.assert_frame_equal(expected, result)
 
     def test_categorical(self):
-        # FIXME
 
         with ensure_clean_store(self.path) as store:
 
             s = Series(Categorical(['a', 'b', 'b', 'a', 'a', 'c'], categories=['a','b','c','d']))
 
-            self.assertRaises(NotImplementedError, store.put, 's_fixed', s, format='fixed')
-            self.assertRaises(NotImplementedError, store.append, 's_table', s, format='table')
-            #store.append('s', s, format='table')
-            #result = store.select('s')
-            #tm.assert_series_equal(s, result)
+            store.append('s', s, format='table')
+            result = store.select('s')
+            tm.assert_series_equal(s, result)
 
             df = DataFrame({"s":s, "vals":[1,2,3,4,5,6]})
-            self.assertRaises(NotImplementedError, store.put, 'df_fixed', df, format='fixed')
-            self.assertRaises(NotImplementedError, store.append, 'df_table', df, format='table')
-            #store.append('df', df, format='table')
-            #result = store.select('df')
-            #tm.assert_frame_equal(df, df2)
+            store.append('df', df, format='table')
+            result = store.select('df')
+            tm.assert_frame_equal(result, df)
 
-            # Ok, this doesn't work yet
-            # FIXME: TypeError: cannot pass a where specification when reading from a Fixed format store. this store must be selected in its entirety
-            #result = store.select('df', where = ['index>2'])
-            #tm.assert_frame_equal(df[df.index>2],result)
+            # dtypes
+            s = Series([1,1,2,2,3,4,5]).astype('category')
+            store.append('si',s)
+            result = store.select('si')
+            tm.assert_series_equal(result, s)
+
+            s = Series([1,1,np.nan,2,3,4,5]).astype('category')
+            store.append('si2',s)
+            result = store.select('si2')
+            tm.assert_series_equal(result, s)
+
+            # multiple
+            df2 = df.copy()
+            df2['s2'] = Series(list('abcdefg')).astype('category')
+            store.append('df2',df2)
+            result = store.select('df2')
+            tm.assert_frame_equal(result, df2)
+
+            # make sure the metadata is ok
+            self.assertTrue('/df2   ' in str(store))
+            self.assertTrue('/df2/meta/values_block_0/meta' in str(store))
+            self.assertTrue('/df2/meta/values_block_1/meta' in str(store))
+
+            # unordered
+            s = Series(Categorical(['a', 'b', 'b', 'a', 'a', 'c'], categories=['a','b','c','d'],ordered=False))
+            store.append('s2', s, format='table')
+            result = store.select('s2')
+            tm.assert_series_equal(result, s)
+
+            # query
+            store.append('df3', df, data_columns=['s'])
+            expected = df[df.s.isin(['b','c'])]
+            result = store.select('df3', where = ['s in ["b","c"]'])
+            tm.assert_frame_equal(result, expected)
+
+            expected = df[df.s.isin(['d'])]
+            result = store.select('df3', where = ['s in ["d"]'])
+            tm.assert_frame_equal(result, expected)
+
+            expected = df[df.s.isin(['f'])]
+            result = store.select('df3', where = ['s in ["f"]'])
+            tm.assert_frame_equal(result, expected)
+
+            # appending with same categories is ok
+            store.append('df3', df)
+
+            df = concat([df,df])
+            expected = df[df.s.isin(['b','c'])]
+            result = store.select('df3', where = ['s in ["b","c"]'])
+            tm.assert_frame_equal(result, expected)
+
+            # appending must have the same categories
+            df3 = df.copy()
+            df3['s'].cat.remove_unused_categories(inplace=True)
+
+            self.assertRaises(ValueError, lambda : store.append('df3', df3))
+
+            # remove
+            # make sure meta data is removed (its a recursive removal so should be)
+            result = store.select('df3/meta/s/meta')
+            self.assertIsNotNone(result)
+            store.remove('df3')
+            self.assertRaises(KeyError, lambda : store.select('df3/meta/s/meta'))
 
     def test_duplicate_column_name(self):
         df = DataFrame(columns=["a", "a"], data=[[0, 0]])

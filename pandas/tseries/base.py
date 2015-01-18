@@ -69,6 +69,13 @@ class DatetimeIndexOpsMixin(object):
         except (KeyError, TypeError):
             return False
 
+    @property
+    def freqstr(self):
+        """ return the frequency object as a string if its set, otherwise None """
+        if self.freq is None:
+            return None
+        return self.freq.freqstr
+
     @cache_readonly
     def inferred_freq(self):
         try:
@@ -113,52 +120,6 @@ class DatetimeIndexOpsMixin(object):
         if isinstance(maybe_slice, slice):
             return self[maybe_slice]
         return super(DatetimeIndexOpsMixin, self).take(indices, axis)
-
-    def slice_locs(self, start=None, end=None):
-        """
-        Index.slice_locs, customized to handle partial ISO-8601 string slicing
-        """
-        if isinstance(start, compat.string_types) or isinstance(end, compat.string_types):
-
-            if self.is_monotonic:
-                try:
-                    if start:
-                        start_loc = self._get_string_slice(start).start
-                    else:
-                        start_loc = 0
-
-                    if end:
-                        end_loc = self._get_string_slice(end).stop
-                    else:
-                        end_loc = len(self)
-
-                    return start_loc, end_loc
-                except KeyError:
-                    pass
-
-            else:
-                # can't use a slice indexer because we are not sorted!
-                # so create an indexer directly
-                try:
-                    if start:
-                        start_loc = self._get_string_slice(start,
-                                                           use_rhs=False)
-                    else:
-                        start_loc = np.arange(len(self))
-
-                    if end:
-                        end_loc = self._get_string_slice(end, use_lhs=False)
-                    else:
-                        end_loc = np.arange(len(self))
-
-                    return start_loc, end_loc
-                except KeyError:
-                    pass
-
-        if isinstance(start, time) or isinstance(end, time):
-            raise KeyError('Cannot use slice_locs with time slice keys')
-
-        return Index.slice_locs(self, start, end)
 
     def get_duplicates(self):
         values = Index.get_duplicates(self)
@@ -367,6 +328,7 @@ class DatetimeIndexOpsMixin(object):
             else:  # pragma: no cover
                 return NotImplemented
         cls.__add__ = __add__
+        cls.__radd__ = __add__
 
         def __sub__(self, other):
             from pandas.core.index import Index
@@ -389,6 +351,10 @@ class DatetimeIndexOpsMixin(object):
             else:  # pragma: no cover
                 return NotImplemented
         cls.__sub__ = __sub__
+
+        def __rsub__(self, other):
+            return -(self - other)
+        cls.__rsub__ = __rsub__
 
         cls.__iadd__ = __add__
         cls.__isub__ = __sub__
@@ -500,3 +466,23 @@ class DatetimeIndexOpsMixin(object):
         """
         return self._simple_new(self.values.repeat(repeats),
                                 name=self.name)
+
+    def summary(self, name=None):
+        """
+        return a summarized representation
+        """
+        formatter = self._formatter_func
+        if len(self) > 0:
+            index_summary = ', %s to %s' % (formatter(self[0]),
+                                            formatter(self[-1]))
+        else:
+            index_summary = ''
+
+        if name is None:
+            name = type(self).__name__
+        result = '%s: %s entries%s' % (com.pprint_thing(name),
+                                       len(self), index_summary)
+        if self.freq:
+            result += '\nFreq: %s' % self.freqstr
+
+        return result

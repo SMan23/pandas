@@ -1,5 +1,5 @@
-from __future__ import print_function
 # -*- coding: utf-8 -*-
+from __future__ import print_function
 import re
 
 from pandas.compat import range, zip, lrange, StringIO, PY3, lzip, u
@@ -26,6 +26,8 @@ import pandas as pd
 from pandas.core.config import (set_option, get_option,
                                 option_context, reset_option)
 from datetime import datetime
+
+import nose
 
 _frame = DataFrame(tm.getSeriesData())
 
@@ -568,6 +570,47 @@ class TestDataFrameFormatting(tm.TestCase):
   </tbody>
 </table>"""
         self.assertEqual(xp, rs)
+
+    def test_to_html_multiindex_index_false(self):
+        # issue 8452
+        df = pd.DataFrame({
+            'a': range(2),
+            'b': range(3, 5),
+            'c': range(5, 7),
+            'd': range(3, 5)}
+        )
+        df.columns = pd.MultiIndex.from_product([['a', 'b'], ['c', 'd']])
+        result = df.to_html(index=False)
+        expected = """\
+<table border="1" class="dataframe">
+  <thead>
+    <tr>
+      <th colspan="2" halign="left">a</th>
+      <th colspan="2" halign="left">b</th>
+    </tr>
+    <tr>
+      <th>c</th>
+      <th>d</th>
+      <th>c</th>
+      <th>d</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td> 0</td>
+      <td> 3</td>
+      <td> 5</td>
+      <td> 3</td>
+    </tr>
+    <tr>
+      <td> 1</td>
+      <td> 4</td>
+      <td> 6</td>
+      <td> 4</td>
+    </tr>
+  </tbody>
+</table>"""
+        self.assertEqual(result, expected)
 
     def test_to_html_multiindex_sparsify_false_multi_sparse(self):
         with option_context('display.multi_sparse', False):
@@ -1190,7 +1233,6 @@ class TestDataFrameFormatting(tm.TestCase):
         fmt.set_option('display.max_rows', 200)
 
     def test_pprint_thing(self):
-        import nose
         from pandas.core.common import pprint_thing as pp_t
 
         if PY3:
@@ -3036,6 +3078,5 @@ class TestStringRepTimestamp(tm.TestCase):
         self.assertEqual(str(dt_datetime_us), str(Timestamp(dt_datetime_us)))
 
 if __name__ == '__main__':
-    import nose
     nose.runmodule(argv=[__file__, '-vvs', '-x', '--pdb', '--pdb-failure'],
                    exit=False)

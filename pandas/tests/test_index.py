@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # pylint: disable=E1101,E1103,W0232
 
 from datetime import datetime, timedelta
@@ -32,6 +33,7 @@ import pandas.tseries.offsets as offsets
 
 import pandas as pd
 from pandas.lib import Timestamp
+from itertools import product
 
 
 class Base(object):
@@ -910,8 +912,34 @@ class TestIndex(Base, tm.TestCase):
         self.assertEqual(idx.slice_locs(1), (1, 3))
         self.assertEqual(idx.slice_locs(np.nan), (0, 3))
 
-        idx = Index([np.nan, np.nan, 1, 2])
-        self.assertRaises(KeyError, idx.slice_locs, np.nan)
+        idx = Index([0, np.nan, np.nan, 1, 2])
+        self.assertEqual(idx.slice_locs(np.nan), (1, 5))
+
+    def test_slice_locs_negative_step(self):
+        idx = Index(list('bcdxy'))
+
+        SLC = pd.IndexSlice
+
+        def check_slice(in_slice, expected):
+            s_start, s_stop = idx.slice_locs(in_slice.start, in_slice.stop,
+                                             in_slice.step)
+            result = idx[s_start:s_stop:in_slice.step]
+            expected = pd.Index(list(expected))
+            self.assertTrue(result.equals(expected))
+
+        for in_slice, expected in [
+                (SLC[::-1], 'yxdcb'), (SLC['b':'y':-1], ''),
+                (SLC['b'::-1], 'b'), (SLC[:'b':-1], 'yxdcb'),
+                (SLC[:'y':-1], 'y'), (SLC['y'::-1], 'yxdcb'),
+                (SLC['y'::-4], 'yb'),
+                # absent labels
+                (SLC[:'a':-1], 'yxdcb'), (SLC[:'a':-2], 'ydb'),
+                (SLC['z'::-1], 'yxdcb'), (SLC['z'::-3], 'yc'),
+                (SLC['m'::-1], 'dcb'), (SLC[:'m':-1], 'yx'),
+                (SLC['a':'a':-1], ''), (SLC['z':'z':-1], ''),
+                (SLC['m':'m':-1], '')
+        ]:
+            check_slice(in_slice, expected)
 
     def test_drop(self):
         n = len(self.strIndex)
@@ -1137,6 +1165,11 @@ class TestIndex(Base, tm.TestCase):
         self.assertEqual(reindexed.levels[0].dtype.type, np.int64)
         self.assertEqual(reindexed.levels[1].dtype.type, np.float64)
 
+    def test_groupby(self):
+        idx = Index(range(5))
+        groups = idx.groupby(np.array([1,1,2,2,2]))
+        exp = {1: [0, 1], 2: [2, 3, 4]}
+        tm.assert_dict_equal(groups, exp)
 
 
 class Numeric(Base):
@@ -1854,6 +1887,43 @@ class TestDatetimeIndex(Base, tm.TestCase):
         index = date_range('20130101', periods=3, tz='US/Eastern')
         self.assertEqual(str(index.reindex([])[0].tz), 'US/Eastern')
         self.assertEqual(str(index.reindex(np.array([]))[0].tz), 'US/Eastern')
+
+    def test_time_loc(self):  # GH8667
+        from datetime import time
+        from pandas.index import _SIZE_CUTOFF
+
+        ns = _SIZE_CUTOFF + np.array([-100, 100],dtype=np.int64)
+        key = time(15, 11, 30)
+        start = key.hour * 3600 + key.minute * 60 + key.second
+        step = 24 * 3600
+
+        for n in ns:
+            idx = pd.date_range('2014-11-26', periods=n, freq='S')
+            ts = pd.Series(np.random.randn(n), index=idx)
+            i = np.arange(start, n, step)
+
+            tm.assert_array_equal(ts.index.get_loc(key), i)
+            tm.assert_series_equal(ts[key], ts.iloc[i])
+
+            left, right = ts.copy(), ts.copy()
+            left[key] *= -10
+            right.iloc[i] *= -10
+            tm.assert_series_equal(left, right)
+
+    def test_time_overflow_for_32bit_machines(self):
+        # GH8943.  On some machines NumPy defaults to np.int32 (for example,
+        # 32-bit Linux machines).  In the function _generate_regular_range
+        # found in tseries/index.py, `periods` gets multiplied by `strides`
+        # (which has value 1e9) and since the max value for np.int32 is ~2e9,
+        # and since those machines won't promote np.int32 to np.int64, we get
+        # overflow.
+        periods = np.int_(1000)
+
+        idx1 = pd.date_range(start='2000', periods=periods, freq='S')
+        self.assertEqual(len(idx1), periods)
+
+        idx2 = pd.date_range(end='2000', periods=periods, freq='S')
+        self.assertEqual(len(idx2), periods)
 
 
 class TestPeriodIndex(Base, tm.TestCase):
@@ -3284,6 +3354,56 @@ class TestMultiIndex(Base, tm.TestCase):
         assertRaisesRegexp(ValueError, "Item must have length equal to number"
                            " of levels", self.index.insert, 0, ('foo2',))
 
+        left = pd.DataFrame([['a', 'b', 0], ['b', 'd', 1]],
+                            columns=['1st', '2nd', '3rd'])
+        left.set_index(['1st', '2nd'], inplace=True)
+        ts = left['3rd'].copy(deep=True)
+
+        left.loc[('b', 'x'), '3rd'] = 2
+        left.loc[('b', 'a'), '3rd'] = -1
+        left.loc[('b', 'b'), '3rd'] = 3
+        left.loc[('a', 'x'), '3rd'] = 4
+        left.loc[('a', 'w'), '3rd'] = 5
+        left.loc[('a', 'a'), '3rd'] = 6
+
+        ts.loc[('b', 'x')] = 2
+        ts.loc['b', 'a'] = -1
+        ts.loc[('b', 'b')] = 3
+        ts.loc['a', 'x'] = 4
+        ts.loc[('a', 'w')] = 5
+        ts.loc['a', 'a'] = 6
+
+        right = pd.DataFrame([['a', 'b',  0],
+                              ['b', 'd',  1],
+                              ['b', 'x',  2],
+                              ['b', 'a', -1],
+                              ['b', 'b',  3],
+                              ['a', 'x',  4],
+                              ['a', 'w',  5],
+                              ['a', 'a',  6]],
+                              columns=['1st', '2nd', '3rd'])
+        right.set_index(['1st', '2nd'], inplace=True)
+        # FIXME data types changes to float because
+        # of intermediate nan insertion;
+        tm.assert_frame_equal(left, right, check_dtype=False)
+        tm.assert_series_equal(ts, right['3rd'])
+
+        # GH9250
+        idx = [('test1', i) for i in range(5)] + \
+                [('test2', i) for i in range(6)] + \
+                [('test', 17), ('test', 18)]
+
+        left = pd.Series(np.linspace(0, 10, 11),
+                         pd.MultiIndex.from_tuples(idx[:-2]))
+
+        left.loc[('test', 17)] = 11
+        left.ix[('test', 18)] = 12
+
+        right = pd.Series(np.linspace(0, 12, 13),
+                          pd.MultiIndex.from_tuples(idx))
+
+        tm.assert_series_equal(left, right)
+
     def test_take_preserve_name(self):
         taken = self.index.take([3, 0, 1])
         self.assertEqual(taken.names, self.index.names)
@@ -3381,6 +3501,99 @@ class TestMultiIndex(Base, tm.TestCase):
                            labels=[[0, 0, 0, 0, 1, 1, 1],
                                    [0, 1, 2, 0, 0, 1, 2]])
         self.assertTrue(index.has_duplicates)
+
+        # GH 9075
+        t = [(u('x'), u('out'), u('z'), 5, u('y'), u('in'), u('z'), 169),
+             (u('x'), u('out'), u('z'), 7, u('y'), u('in'), u('z'), 119),
+             (u('x'), u('out'), u('z'), 9, u('y'), u('in'), u('z'), 135),
+             (u('x'), u('out'), u('z'), 13, u('y'), u('in'), u('z'), 145),
+             (u('x'), u('out'), u('z'), 14, u('y'), u('in'), u('z'), 158),
+             (u('x'), u('out'), u('z'), 16, u('y'), u('in'), u('z'), 122),
+             (u('x'), u('out'), u('z'), 17, u('y'), u('in'), u('z'), 160),
+             (u('x'), u('out'), u('z'), 18, u('y'), u('in'), u('z'), 180),
+             (u('x'), u('out'), u('z'), 20, u('y'), u('in'), u('z'), 143),
+             (u('x'), u('out'), u('z'), 21, u('y'), u('in'), u('z'), 128),
+             (u('x'), u('out'), u('z'), 22, u('y'), u('in'), u('z'), 129),
+             (u('x'), u('out'), u('z'), 25, u('y'), u('in'), u('z'), 111),
+             (u('x'), u('out'), u('z'), 28, u('y'), u('in'), u('z'), 114),
+             (u('x'), u('out'), u('z'), 29, u('y'), u('in'), u('z'), 121),
+             (u('x'), u('out'), u('z'), 31, u('y'), u('in'), u('z'), 126),
+             (u('x'), u('out'), u('z'), 32, u('y'), u('in'), u('z'), 155),
+             (u('x'), u('out'), u('z'), 33, u('y'), u('in'), u('z'), 123),
+             (u('x'), u('out'), u('z'), 12, u('y'), u('in'), u('z'), 144)]
+
+        index = pd.MultiIndex.from_tuples(t)
+        self.assertFalse(index.has_duplicates)
+
+        # handle int64 overflow if possible
+        def check(nlevels, with_nulls):
+            labels = np.tile(np.arange(500), 2)
+            level = np.arange(500)
+
+            if with_nulls:  # inject some null values
+                labels[500] = -1  # common nan value
+                labels = list(labels.copy() for i in range(nlevels))
+                for i in range(nlevels):
+                    labels[i][500 + i - nlevels // 2 ] = -1
+
+                labels += [np.array([-1, 1]).repeat(500)]
+            else:
+                labels = [labels] * nlevels + [np.arange(2).repeat(500)]
+
+            levels = [level] * nlevels + [[0, 1]]
+
+            # no dups
+            index = MultiIndex(levels=levels, labels=labels)
+            self.assertFalse(index.has_duplicates)
+
+            # with a dup
+            if with_nulls:
+                f = lambda a: np.insert(a, 1000, a[0])
+                labels = list(map(f, labels))
+                index = MultiIndex(levels=levels, labels=labels)
+            else:
+                values = index.values.tolist()
+                index = MultiIndex.from_tuples(values + [values[0]])
+
+            self.assertTrue(index.has_duplicates)
+
+        # no overflow
+        check(4, False)
+        check(4, True)
+
+        # overflow possible
+        check(8, False)
+        check(8, True)
+
+        # GH 9125
+        n, k = 200, 5000
+        levels = [np.arange(n), tm.makeStringIndex(n), 1000 + np.arange(n)]
+        labels = [np.random.choice(n, k * n) for lev in levels]
+        mi = MultiIndex(levels=levels, labels=labels)
+
+        for take_last in [False, True]:
+            left = mi.duplicated(take_last=take_last)
+            right = pd.lib.duplicated(mi.values, take_last=take_last)
+            tm.assert_array_equal(left, right)
+
+        # GH5873
+        for a in [101, 102]:
+            mi = MultiIndex.from_arrays([[101, a], [3.5, np.nan]])
+            self.assertFalse(mi.has_duplicates)
+            self.assertEqual(mi.get_duplicates(), [])
+            self.assert_array_equal(mi.duplicated(), np.zeros(2, dtype='bool'))
+
+        for n in range(1, 6):  # 1st level shape
+            for m in range(1, 5):  # 2nd level shape
+                # all possible unique combinations, including nan
+                lab = product(range(-1, n), range(-1, m))
+                mi = MultiIndex(levels=[list('abcde')[:n], list('WXYZ')[:m]],
+                                labels=np.random.permutation(list(lab)).T)
+                self.assertEqual(len(mi), (n + 1) * (m + 1))
+                self.assertFalse(mi.has_duplicates)
+                self.assertEqual(mi.get_duplicates(), [])
+                self.assert_array_equal(mi.duplicated(),
+                                        np.zeros(len(mi), dtype='bool'))
 
     def test_tolist(self):
         result = self.index.tolist()
@@ -3523,6 +3736,17 @@ class TestMultiIndex(Base, tm.TestCase):
                          np.int64)
         self.assertEqual(idx.reindex([], level=1)[0].levels[1].dtype.type,
                          np.object_)
+
+    def test_groupby(self):
+        groups = self.index.groupby(np.array([1, 1, 1, 2, 2, 2]))
+        labels = self.index.get_values().tolist()
+        exp = {1: labels[:3], 2: labels[3:]}
+        tm.assert_dict_equal(groups, exp)
+
+        # GH5620
+        groups = self.index.groupby(self.index)
+        exp = dict((key, [key]) for key in self.index)
+        tm.assert_dict_equal(groups, exp)
 
 
 def test_get_combined_index():

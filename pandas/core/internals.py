@@ -2985,7 +2985,7 @@ class BlockManager(PandasObject):
             loc = [loc]
 
         blknos = self._blknos[loc]
-        blklocs = self._blklocs[loc]
+        blklocs = self._blklocs[loc].copy()
 
         unfit_mgr_locs = []
         unfit_val_locs = []
@@ -3257,7 +3257,9 @@ class BlockManager(PandasObject):
         Take items along any axis.
         """
         self._consolidate_inplace()
-        indexer = np.asanyarray(indexer, dtype=np.int_)
+        indexer = np.arange(indexer.start, indexer.stop, indexer.step,
+                            dtype='int64') if isinstance(indexer, slice) \
+                                    else np.asanyarray(indexer, dtype='int64')
 
         n = self.shape[axis]
         if convert:
@@ -4381,7 +4383,7 @@ class JoinUnit(object):
         else:
             fill_value = upcasted_na
 
-            if self.is_null:
+            if self.is_null and not getattr(self.block,'is_categorical',None):
                 missing_arr = np.empty(self.shape, dtype=empty_dtype)
                 if np.prod(self.shape):
                     # NumPy 1.6 workaround: this statement gets strange if all

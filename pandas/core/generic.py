@@ -121,11 +121,11 @@ class NDFrame(PandasObject):
                 mgr = mgr.reindex_axis(
                     axe, axis=self._get_block_manager_axis(a), copy=False)
 
-        # do not copy BlockManager unless explicitly done
-        if copy and dtype is None:
+        # make a copy if explicitly requested
+        if copy:
             mgr = mgr.copy()
-        elif dtype is not None:
-            # avoid copy if we can
+        if dtype is not None:
+            # avoid further copies if we can
             if len(mgr.blocks) > 1 or mgr.blocks[0].values.dtype != dtype:
                 mgr = mgr.astype(dtype=dtype)
         return mgr
@@ -380,6 +380,11 @@ class NDFrame(PandasObject):
     def ndim(self):
         "Number of axes / array dimensions"
         return self._data.ndim
+
+    @property
+    def size(self):
+        "number of elements in the NDFrame"
+        return np.prod(self.shape)
 
     def _expand_axes(self, key):
         new_axes = []
@@ -917,7 +922,7 @@ class NDFrame(PandasObject):
         return packers.to_msgpack(path_or_buf, self, **kwargs)
 
     def to_sql(self, name, con, flavor='sqlite', schema=None, if_exists='fail',
-               index=True, index_label=None, chunksize=None):
+               index=True, index_label=None, chunksize=None, dtype=None):
         """
         Write records stored in a DataFrame to a SQL database.
 
@@ -949,12 +954,16 @@ class NDFrame(PandasObject):
         chunksize : int, default None
             If not None, then rows will be written in batches of this size at a
             time.  If None, all rows will be written at once.
+        dtype : dict of column name to SQL type, default None
+            Optional specifying the datatype for columns. The SQL type should
+            be a SQLAlchemy type, or a string for sqlite3 fallback connection.
 
         """
         from pandas.io import sql
         sql.to_sql(
             self, name, con, flavor=flavor, schema=schema, if_exists=if_exists,
-            index=index, index_label=index_label, chunksize=chunksize)
+            index=index, index_label=index_label, chunksize=chunksize,
+            dtype=dtype)
 
     def to_pickle(self, path):
         """
@@ -1921,11 +1930,12 @@ class NDFrame(PandasObject):
         return self
 
     def __getattr__(self, name):
-        """After regular attribute access, try looking up the name of a the
-        info.
-
+        """After regular attribute access, try looking up the name
         This allows simpler access to columns for interactive use.
         """
+        # Note: obj.x will always call obj.__getattribute__('x') prior to
+        # calling obj.__getattr__('x').
+
         if name in self._internal_names_set:
             return object.__getattribute__(self, name)
         elif name in self._metadata:
@@ -1937,12 +1947,24 @@ class NDFrame(PandasObject):
                                  (type(self).__name__, name))
 
     def __setattr__(self, name, value):
-        """After regular attribute access, try looking up the name of the info
+        """After regular attribute access, try setting the name
         This allows simpler access to columns for interactive use."""
+        # first try regular attribute access via __getattribute__, so that
+        # e.g. ``obj.x`` and ``obj.x = 4`` will always reference/modify
+        # the same attribute.
+
+        try:
+            object.__getattribute__(self, name)
+            return object.__setattr__(self, name, value)
+        except AttributeError:
+            pass
+
+        # if this fails, go on to more involved attribute setting
+        # (note that this matches __getattr__, above).
         if name in self._internal_names_set:
             object.__setattr__(self, name, value)
         elif name in self._metadata:
-            return object.__setattr__(self, name, value)
+            object.__setattr__(self, name, value)
         else:
             try:
                 existing = getattr(self, name)
@@ -2138,20 +2160,12 @@ class NDFrame(PandasObject):
         Convert the frame to a dict of dtype -> Constructor Types that each has
         a homogeneous dtype.
 
-        are presented in sorted order unless a specific list of columns is
-        provided.
-
         NOTE: the dtypes of the blocks WILL BE PRESERVED HERE (unlike in
               as_matrix)
 
-        Parameters
-        ----------
-        columns : array-like
-            Specific column order
-
         Returns
         -------
-        values : a list of Object
+        values : a dict of dtype -> Constructor Types
         """
         self._consolidate_inplace()
 
@@ -2238,7 +2252,7 @@ class NDFrame(PandasObject):
     #----------------------------------------------------------------------
     # Filling NA's
 
-    def fillna(self, value=None, method=None, axis=0, inplace=False,
+    def fillna(self, value=None, method=None, axis=None, inplace=False,
                limit=None, downcast=None):
         """
         Fill NA/NaN values using the specified method
@@ -2281,6 +2295,10 @@ class NDFrame(PandasObject):
                             'you passed a "{0}"'.format(type(value).__name__))
         self._consolidate_inplace()
 
+        # set the default here, so functions examining the signaure
+        # can detect if something was set (e.g. in groupby) (GH9221)
+        if axis is None:
+            axis = 0
         axis = self._get_axis_number(axis)
         method = com._clean_fill_method(method)
 
@@ -2369,12 +2387,12 @@ class NDFrame(PandasObject):
         else:
             return self._constructor(new_data).__finalize__(self)
 
-    def ffill(self, axis=0, inplace=False, limit=None, downcast=None):
+    def ffill(self, axis=None, inplace=False, limit=None, downcast=None):
         "Synonym for NDFrame.fillna(method='ffill')"
         return self.fillna(method='ffill', axis=axis, inplace=inplace,
                            limit=limit, downcast=downcast)
 
-    def bfill(self, axis=0, inplace=False, limit=None, downcast=None):
+    def bfill(self, axis=None, inplace=False, limit=None, downcast=None):
         "Synonym for NDFrame.fillna(method='bfill')"
         return self.fillna(method='bfill', axis=axis, inplace=inplace,
                            limit=limit, downcast=downcast)
@@ -2867,10 +2885,12 @@ class NDFrame(PandasObject):
         GroupBy object
 
         """
-
         from pandas.core.groupby import groupby
+
+        if level is None and by is None:
+            raise TypeError("You have to supply one of 'by' and 'level'")
         axis = self._get_axis_number(axis)
-        return groupby(self, by, axis=axis, level=level, as_index=as_index,
+        return groupby(self, by=by, axis=axis, level=level, as_index=as_index,
                        sort=sort, group_keys=group_keys, squeeze=squeeze)
 
     def asfreq(self, freq, method=None, how=None, normalize=False):
@@ -4104,13 +4124,17 @@ equivalent of the ``numpy.ndarray`` method ``argmin``.""", nanops.nanmin)
                     axis = self._get_axis_number(axis)
 
                 y = _values_from_object(self).copy()
-                if not issubclass(y.dtype.type, (np.integer, np.bool_)):
-                    mask = isnull(self)
-                    if skipna:
-                        np.putmask(y, mask, mask_a)
+
+                if skipna and issubclass(y.dtype.type,
+                                         (np.datetime64, np.timedelta64)):
                     result = accum_func(y, axis)
-                    if skipna:
-                        np.putmask(result, mask, mask_b)
+                    mask = isnull(self)
+                    np.putmask(result, mask, pd.tslib.iNaT)
+                elif skipna and not issubclass(y.dtype.type, (np.integer, np.bool_)):
+                    mask = isnull(self)
+                    np.putmask(y, mask, mask_a)
+                    result = accum_func(y, axis)
+                    np.putmask(result, mask, mask_b)
                 else:
                     result = accum_func(y, axis)
 

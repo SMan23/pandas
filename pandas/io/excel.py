@@ -83,6 +83,11 @@ def read_excel(io, sheetname=0, **kwds):
         Rows to skip at the beginning (0-indexed)
     skip_footer : int, default 0
         Rows at the end to skip (0-indexed)
+    converters : dict, default None
+        Dict of functions for converting values in certain columns. Keys can
+        either be integers or column labels, values are functions that take one
+        input argument, the Excel cell content, and return the transformed
+        content.
     index_col : int, default None
         Column to use as the row labels of the DataFrame. Pass None if
         there is no such column
@@ -175,7 +180,7 @@ class ExcelFile(object):
     def parse(self, sheetname=0, header=0, skiprows=None, skip_footer=0,
               index_col=None, parse_cols=None, parse_dates=False,
               date_parser=None, na_values=None, thousands=None, chunksize=None,
-              convert_float=True, has_index_names=False, **kwds):
+              convert_float=True, has_index_names=False, converters=None, **kwds):
         """Read an Excel table into DataFrame
 
         Parameters
@@ -188,6 +193,9 @@ class ExcelFile(object):
             Rows to skip at the beginning (0-indexed)
         skip_footer : int, default 0
             Rows at the end to skip (0-indexed)
+        converters : dict, default None
+            Dict of functions for converting values in certain columns. Keys can
+            either be integers or column labels
         index_col : int, default None
             Column to use as the row labels of the DataFrame. Pass None if
             there is no such column
@@ -235,6 +243,7 @@ class ExcelFile(object):
                                  thousands=thousands, chunksize=chunksize,
                                  skip_footer=skip_footer,
                                  convert_float=convert_float,
+                                 converters=converters,
                                  **kwds)
 
     def _should_parse(self, i, parse_cols):
@@ -1264,6 +1273,10 @@ class _XlsxWriter(ExcelWriter):
         style_dict: style dictionary to convert
         num_format_str: optional number format string
         """
+
+        # If there is no formatting we don't create a format object.
+        if num_format_str is None and style_dict is None:
+            return None
 
         # Create a XlsxWriter format object.
         xl_format = self.book.add_format()

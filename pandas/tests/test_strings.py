@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # pylint: disable-msg=E1101,W0612
 
 from datetime import datetime, timedelta, date
@@ -628,6 +629,7 @@ class TestStringMethods(tm.TestCase):
         tm.assert_series_equal(empty_str, empty.str.center(42))
         tm.assert_series_equal(empty_list, empty.str.split('a'))
         tm.assert_series_equal(empty_str, empty.str.slice(stop=1))
+        tm.assert_series_equal(empty_str, empty.str.slice(step=1))
         tm.assert_series_equal(empty_str, empty.str.strip())
         tm.assert_series_equal(empty_str, empty.str.lstrip())
         tm.assert_series_equal(empty_str, empty.str.rstrip())
@@ -922,6 +924,17 @@ class TestStringMethods(tm.TestCase):
         exp = Series(['foo', 'bar', NA, 'baz'])
         tm.assert_series_equal(result, exp)
 
+        for start, stop, step in [(0, 3, -1), (None, None, -1),
+                                  (3, 10, 2), (3, 0, -1)]:
+            try:
+                result = values.str.slice(start, stop, step)
+                expected = Series([s[start:stop:step] if not isnull(s) else NA for s in
+                                   values])
+                tm.assert_series_equal(result, expected)
+            except:
+                print('failed on %s:%s:%s' % (start, stop, step))
+                raise
+
         # mixed
         mixed = Series(['aafootwo', NA, 'aabartwo', True, datetime.today(),
                         None, 1, 2.])
@@ -933,6 +946,10 @@ class TestStringMethods(tm.TestCase):
         tm.assert_isinstance(rs, Series)
         tm.assert_almost_equal(rs, xp)
 
+        rs = Series(mixed).str.slice(2, 5, -1)
+        xp = Series(['oof', NA, 'rab', NA, NA,
+                     NA, NA, NA])
+
         # unicode
         values = Series([u('aafootwo'), u('aabartwo'), NA,
                          u('aabazqux')])
@@ -941,8 +958,44 @@ class TestStringMethods(tm.TestCase):
         exp = Series([u('foo'), u('bar'), NA, u('baz')])
         tm.assert_series_equal(result, exp)
 
+        result = values.str.slice(0, -1, 2)
+        exp = Series([u('afow'), u('abrw'), NA, u('abzu')])
+        tm.assert_series_equal(result, exp)
+
     def test_slice_replace(self):
-        pass
+        values = Series(['short', 'a bit longer', 'evenlongerthanthat', '', NA])
+
+        exp = Series(['shrt', 'a it longer', 'evnlongerthanthat', '', NA])
+        result = values.str.slice_replace(2, 3)
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['shzrt', 'a zit longer', 'evznlongerthanthat', 'z', NA])
+        result = values.str.slice_replace(2, 3, 'z')
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['shzort', 'a zbit longer', 'evzenlongerthanthat', 'z', NA])
+        result = values.str.slice_replace(2, 2, 'z')
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['shzort', 'a zbit longer', 'evzenlongerthanthat', 'z', NA])
+        result = values.str.slice_replace(2, 1, 'z')
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['shorz', 'a bit longez', 'evenlongerthanthaz', 'z', NA])
+        result = values.str.slice_replace(-1, None, 'z')
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['zrt', 'zer', 'zat', 'z', NA])
+        result = values.str.slice_replace(None, -2, 'z')
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['shortz', 'a bit znger', 'evenlozerthanthat', 'z', NA])
+        result = values.str.slice_replace(6, 8, 'z')
+        tm.assert_series_equal(result, exp)
+
+        exp = Series(['zrt', 'a zit longer', 'evenlongzerthanthat', 'z', NA])
+        result = values.str.slice_replace(-10, 3, 'z')
+        tm.assert_series_equal(result, exp)
 
     def test_strip_lstrip_rstrip(self):
         values = Series(['  aa   ', ' bb \n', NA, 'cc  '])
@@ -1149,6 +1202,10 @@ class TestStringMethods(tm.TestCase):
 
         result = s.str[:3]
         expected = s.str.slice(stop=3)
+        assert_series_equal(result, expected)
+
+        result = s.str[2::-1]
+        expected = s.str.slice(start=2, step=-1)
         assert_series_equal(result, expected)
 
     def test_string_slice_out_of_bounds(self):

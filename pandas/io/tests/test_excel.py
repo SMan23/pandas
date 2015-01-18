@@ -399,6 +399,31 @@ class ExcelReaderTests(SharedItems, tm.TestCase):
                            convert_float=False)
         tm.assert_frame_equal(actual, no_convert_float)
 
+    # GH8212 - support for converters and missing values
+    def test_reader_converters(self):
+        _skip_if_no_xlrd()
+
+        expected = DataFrame.from_items([
+            ("IntCol", [1, 2, -3, -1000, 0]),
+            ("FloatCol", [12.5, np.nan, 18.3, 19.2, 0.000000005]),
+            ("BoolCol", ['Found', 'Found', 'Found', 'Not found', 'Found']),
+            ("StrCol", ['1', np.nan, '3', '4', '5']),
+        ])
+
+        converters = {'IntCol': lambda x: int(x) if x != '' else -1000,
+                      'FloatCol': lambda x: 10 * x if x else np.nan,
+                      2: lambda x: 'Found' if x != '' else 'Not found',
+                      3: lambda x: str(x) if x else '',
+                      }
+
+        xlsx_path = os.path.join(self.dirpath, 'test_converters.xlsx')
+        xls_path = os.path.join(self.dirpath, 'test_converters.xls')
+
+        # should read in correctly and set types of single cells (not array dtypes)
+        for path in (xls_path, xlsx_path):
+            actual = read_excel(path, 'Sheet1', converters=converters)
+            tm.assert_frame_equal(actual, expected)
+
     def test_reader_seconds(self):
         # Test reading times with and without milliseconds. GH5945.
         _skip_if_no_xlrd()
@@ -1126,6 +1151,29 @@ class ExcelWriterBase(SharedItems):
             tm.assert_series_equal(write_frame['A'], read_frame['A'])
             tm.assert_series_equal(write_frame['B'], read_frame['B'])
 
+    def test_datetimes(self):
+
+        # Test writing and reading datetimes. For issue #9139. (xref #9185)
+        _skip_if_no_xlrd()
+
+        datetimes = [datetime(2013, 1, 13, 1, 2, 3),
+                     datetime(2013, 1, 13, 2, 45, 56),
+                     datetime(2013, 1, 13, 4, 29, 49),
+                     datetime(2013, 1, 13, 6, 13, 42),
+                     datetime(2013, 1, 13, 7, 57, 35),
+                     datetime(2013, 1, 13, 9, 41, 28),
+                     datetime(2013, 1, 13, 11, 25, 21),
+                     datetime(2013, 1, 13, 13, 9, 14),
+                     datetime(2013, 1, 13, 14, 53, 7),
+                     datetime(2013, 1, 13, 16, 37, 0),
+                     datetime(2013, 1, 13, 18, 20, 52)]
+
+        with ensure_clean(self.ext) as path:
+            write_frame = DataFrame.from_items([('A', datetimes)])
+            write_frame.to_excel(path, 'Sheet1')
+            read_frame = read_excel(path, 'Sheet1', header=0)
+
+            tm.assert_series_equal(write_frame['A'], read_frame['A'])
 
 def raise_wrapper(major_ver):
     def versioned_raise_wrapper(orig_method):
@@ -1327,6 +1375,47 @@ class XlsxWriterTests(ExcelWriterBase, tm.TestCase):
     ext = '.xlsx'
     engine_name = 'xlsxwriter'
     check_skip = staticmethod(_skip_if_no_xlsxwriter)
+
+    def test_column_format(self):
+        # Test that column formats are applied to cells. Test for issue #9167.
+        # Applicable to xlsxwriter only.
+        _skip_if_no_xlsxwriter()
+
+        import warnings
+        with warnings.catch_warnings():
+            # Ignore the openpyxl lxml warning.
+            warnings.simplefilter("ignore")
+            _skip_if_no_openpyxl()
+            import openpyxl
+
+        with ensure_clean(self.ext) as path:
+            frame = DataFrame({'A': [123456, 123456],
+                               'B': [123456, 123456]})
+
+            writer = ExcelWriter(path)
+            frame.to_excel(writer)
+
+            # Add a number format to col B and ensure it is applied to cells.
+            num_format = '#,##0'
+            write_workbook = writer.book
+            write_worksheet = write_workbook.worksheets()[0]
+            col_format = write_workbook.add_format({'num_format': num_format})
+            write_worksheet.set_column('B:B', None, col_format)
+            writer.save()
+
+            read_workbook = openpyxl.load_workbook(path)
+            read_worksheet = read_workbook.get_sheet_by_name(name='Sheet1')
+
+            # Get the number format from the cell. This method is backward
+            # compatible with older versions of openpyxl.
+            cell = read_worksheet.cell('B2')
+
+            try:
+                read_num_format = cell.style.number_format._format_code
+            except:
+                read_num_format = cell.style.number_format
+
+            self.assertEqual(read_num_format, num_format)
 
 
 class OpenpyxlTests_NoMerge(ExcelWriterBase, tm.TestCase):
